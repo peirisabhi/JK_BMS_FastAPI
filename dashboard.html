@@ -1,0 +1,979 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>JK BMS Monitor</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/mqtt/5.3.4/mqtt.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;600&family=Inter:wght@300;400;500;600&display=swap');
+
+  :root {
+    --bg:       #080c12;
+    --surface:  #0e1520;
+    --card:     #111a27;
+    --border:   #1c2d42;
+    --accent:   #00c8ff;
+    --accent2:  #00ff9d;
+    --warn:     #ffaa00;
+    --danger:   #ff3d5a;
+    --text:     #e2eaf4;
+    --muted:    #4a6080;
+    --mono:     'JetBrains Mono', monospace;
+    --sans:     'Inter', sans-serif;
+  }
+
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--sans);
+    font-size: 14px;
+    min-height: 100vh;
+    overflow-x: hidden;
+  }
+
+  /* ── Grid scanline overlay ── */
+  body::before {
+    content: '';
+    position: fixed;
+    inset: 0;
+    background:
+      repeating-linear-gradient(0deg,
+        transparent, transparent 2px,
+        rgba(0,200,255,.012) 2px, rgba(0,200,255,.012) 4px);
+    pointer-events: none;
+    z-index: 0;
+  }
+
+  /* ── Header ── */
+  header {
+    position: sticky;
+    top: 0;
+    z-index: 100;
+    background: rgba(8,12,18,.92);
+    backdrop-filter: blur(12px);
+    border-bottom: 1px solid var(--border);
+    padding: 0 24px;
+    height: 56px;
+    display: flex;
+    align-items: center;
+    gap: 16px;
+  }
+
+  .logo {
+    font-family: var(--mono);
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--accent);
+    letter-spacing: .08em;
+    text-transform: uppercase;
+  }
+
+  .logo span { color: var(--muted); font-weight: 300; }
+
+  .status-dot {
+    width: 8px; height: 8px;
+    border-radius: 50%;
+    background: var(--muted);
+    transition: background .3s;
+    flex-shrink: 0;
+  }
+  .status-dot.online  { background: var(--accent2); box-shadow: 0 0 8px var(--accent2); }
+  .status-dot.offline { background: var(--danger); }
+
+  #conn-label {
+    font-family: var(--mono);
+    font-size: 11px;
+    color: var(--muted);
+  }
+
+  .header-right { margin-left: auto; display: flex; align-items: center; gap: 12px; }
+
+  #last-update {
+    font-family: var(--mono);
+    font-size: 11px;
+    color: var(--muted);
+  }
+
+  /* ── Layout ── */
+  main {
+    position: relative;
+    z-index: 1;
+    max-width: 1400px;
+    margin: 0 auto;
+    padding: 24px 20px 40px;
+    display: grid;
+    gap: 16px;
+    grid-template-columns: 1fr;
+  }
+
+  /* ── Hero KPIs ── */
+  .kpi-row {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+    gap: 12px;
+  }
+
+  .kpi {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 18px 20px;
+    position: relative;
+    overflow: hidden;
+    transition: border-color .2s;
+  }
+  .kpi::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    background: linear-gradient(135deg, rgba(0,200,255,.04), transparent 60%);
+    pointer-events: none;
+  }
+  .kpi:hover { border-color: rgba(0,200,255,.3); }
+
+  .kpi-label {
+    font-size: 10px;
+    font-weight: 500;
+    letter-spacing: .12em;
+    text-transform: uppercase;
+    color: var(--muted);
+    margin-bottom: 8px;
+  }
+
+  .kpi-value {
+    font-family: var(--mono);
+    font-size: 28px;
+    font-weight: 600;
+    color: var(--text);
+    line-height: 1;
+  }
+
+  .kpi-unit {
+    font-size: 12px;
+    font-weight: 300;
+    color: var(--muted);
+    margin-left: 2px;
+  }
+
+  .kpi-sub {
+    margin-top: 6px;
+    font-size: 11px;
+    color: var(--muted);
+    font-family: var(--mono);
+  }
+
+  .kpi.accent  .kpi-value { color: var(--accent); }
+  .kpi.green   .kpi-value { color: var(--accent2); }
+  .kpi.warn    .kpi-value { color: var(--warn); }
+  .kpi.danger  .kpi-value { color: var(--danger); }
+
+  /* ── State badge ── */
+  .state-badge {
+    display: inline-block;
+    font-family: var(--mono);
+    font-size: 10px;
+    font-weight: 600;
+    letter-spacing: .1em;
+    padding: 3px 8px;
+    border-radius: 4px;
+    text-transform: uppercase;
+    margin-top: 8px;
+  }
+  .state-CHARGING    { background: rgba(0,255,157,.15); color: var(--accent2); }
+  .state-DISCHARGING { background: rgba(0,200,255,.15); color: var(--accent); }
+  .state-IDLE        { background: rgba(74,96,128,.2);  color: var(--muted); }
+
+  /* ── SoC bar ── */
+  .soc-bar-wrap {
+    margin-top: 10px;
+    height: 4px;
+    background: var(--border);
+    border-radius: 2px;
+    overflow: hidden;
+  }
+  .soc-bar-fill {
+    height: 100%;
+    border-radius: 2px;
+    background: linear-gradient(90deg, var(--accent2), var(--accent));
+    transition: width .6s ease;
+  }
+
+  /* ── Two column grid ── */
+  .two-col {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 16px;
+  }
+
+  /* ── Panels ── */
+  .panel {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    overflow: hidden;
+  }
+
+  .panel-header {
+    padding: 14px 20px;
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+
+  .panel-title {
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: .1em;
+    text-transform: uppercase;
+    color: var(--muted);
+  }
+
+  .panel-dot {
+    width: 6px; height: 6px;
+    border-radius: 50%;
+    background: var(--accent);
+    flex-shrink: 0;
+  }
+
+  .panel-body { padding: 16px 20px; }
+
+  /* ── Cell grid ── */
+  .cell-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(90px, 1fr));
+    gap: 8px;
+    padding: 16px 20px;
+  }
+
+  .cell-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 10px 8px;
+    text-align: center;
+    transition: border-color .2s, transform .15s;
+    position: relative;
+  }
+  .cell-card:hover { transform: translateY(-1px); }
+  .cell-card.min-cell { border-color: var(--warn); }
+  .cell-card.max-cell { border-color: var(--accent2); }
+  .cell-card.balancing { border-color: var(--accent); }
+
+  .cell-num {
+    font-size: 9px;
+    letter-spacing: .08em;
+    color: var(--muted);
+    text-transform: uppercase;
+    margin-bottom: 4px;
+  }
+
+  .cell-v {
+    font-family: var(--mono);
+    font-size: 15px;
+    font-weight: 600;
+    color: var(--text);
+  }
+
+  .cell-bar {
+    margin-top: 6px;
+    height: 2px;
+    background: var(--border);
+    border-radius: 1px;
+    overflow: hidden;
+  }
+  .cell-bar-fill {
+    height: 100%;
+    border-radius: 1px;
+    background: var(--accent);
+    transition: width .4s ease;
+  }
+  .cell-card.min-cell .cell-bar-fill { background: var(--warn); }
+  .cell-card.max-cell .cell-bar-fill { background: var(--accent2); }
+  .cell-card.balancing .cell-bar-fill { background: var(--accent); }
+
+  .bal-icon {
+    position: absolute;
+    top: 4px; right: 4px;
+    font-size: 8px;
+    color: var(--accent);
+    opacity: .7;
+  }
+
+  /* ── Temp gauges ── */
+  .temp-row {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+  }
+
+  .temp-item {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+  }
+
+  .temp-label {
+    font-size: 11px;
+    color: var(--muted);
+    width: 80px;
+    flex-shrink: 0;
+  }
+
+  .temp-bar-wrap {
+    flex: 1;
+    height: 6px;
+    background: var(--border);
+    border-radius: 3px;
+    overflow: hidden;
+  }
+
+  .temp-bar-fill {
+    height: 100%;
+    border-radius: 3px;
+    background: linear-gradient(90deg, var(--accent), var(--warn));
+    transition: width .5s ease;
+  }
+
+  .temp-val {
+    font-family: var(--mono);
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--text);
+    width: 52px;
+    text-align: right;
+    flex-shrink: 0;
+  }
+
+  /* ── Status rows ── */
+  .status-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 10px 0;
+    border-bottom: 1px solid var(--border);
+  }
+  .status-row:last-child { border-bottom: none; }
+
+  .status-key {
+    font-size: 12px;
+    color: var(--muted);
+  }
+
+  .status-val {
+    font-family: var(--mono);
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--text);
+  }
+
+  .pill {
+    font-family: var(--mono);
+    font-size: 10px;
+    font-weight: 600;
+    padding: 2px 8px;
+    border-radius: 20px;
+  }
+  .pill.on  { background: rgba(0,255,157,.15); color: var(--accent2); }
+  .pill.off { background: rgba(74,96,128,.1);  color: var(--muted); }
+
+  /* ── Alarm panel ── */
+  .alarm-list { display: flex; flex-direction: column; gap: 8px; }
+
+  .alarm-item {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 10px 14px;
+    border-radius: 8px;
+    font-size: 12px;
+  }
+  .alarm-item.ok      { background: rgba(0,255,157,.06); color: var(--accent2); }
+  .alarm-item.active  { background: rgba(255,61,90,.1);  color: var(--danger); }
+  .alarm-icon { font-size: 14px; }
+
+  /* ── Chart container ── */
+  .chart-wrap {
+    padding: 12px 16px 16px;
+    height: 200px;
+    position: relative;
+  }
+
+  /* ── Device info ── */
+  .device-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 8px;
+  }
+
+  .device-item {
+    padding: 10px 12px;
+    background: var(--surface);
+    border-radius: 8px;
+  }
+
+  .device-label {
+    font-size: 10px;
+    letter-spacing: .1em;
+    text-transform: uppercase;
+    color: var(--muted);
+    margin-bottom: 4px;
+  }
+
+  .device-val {
+    font-family: var(--mono);
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--text);
+    word-break: break-all;
+  }
+
+  /* ── Delta indicator ── */
+  .delta-pill {
+    display: inline-block;
+    font-family: var(--mono);
+    font-size: 12px;
+    font-weight: 600;
+    padding: 2px 10px;
+    border-radius: 20px;
+    background: rgba(0,200,255,.1);
+    color: var(--accent);
+  }
+  .delta-pill.warn { background: rgba(255,170,0,.15); color: var(--warn); }
+  .delta-pill.danger { background: rgba(255,61,90,.15); color: var(--danger); }
+
+  /* ── Offline overlay ── */
+  #offline-banner {
+    display: none;
+    position: fixed;
+    top: 56px; left: 0; right: 0;
+    background: rgba(255,61,90,.12);
+    border-bottom: 1px solid rgba(255,61,90,.3);
+    text-align: center;
+    padding: 10px;
+    font-family: var(--mono);
+    font-size: 12px;
+    color: var(--danger);
+    z-index: 99;
+  }
+
+  /* ── Responsive ── */
+  @media (max-width: 768px) {
+    .two-col { grid-template-columns: 1fr; }
+    .kpi-value { font-size: 22px; }
+    .cell-grid { grid-template-columns: repeat(auto-fill, minmax(72px,1fr)); }
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="logo">JK<span>—</span>BMS</div>
+  <div class="status-dot" id="status-dot"></div>
+  <span id="conn-label">connecting…</span>
+  <div class="header-right">
+    <span id="last-update"></span>
+  </div>
+</header>
+
+<div id="offline-banner">⚠ No data received — check BMS connection</div>
+
+<main>
+
+  <!-- KPI Row -->
+  <div class="kpi-row">
+
+    <div class="kpi accent" id="kpi-voltage">
+      <div class="kpi-label">Pack Voltage</div>
+      <div class="kpi-value">—<span class="kpi-unit">V</span></div>
+    </div>
+
+    <div class="kpi" id="kpi-current">
+      <div class="kpi-label">Current</div>
+      <div class="kpi-value">—<span class="kpi-unit">A</span></div>
+      <div id="state-badge"></div>
+    </div>
+
+    <div class="kpi" id="kpi-power">
+      <div class="kpi-label">Power</div>
+      <div class="kpi-value">—<span class="kpi-unit">W</span></div>
+    </div>
+
+    <div class="kpi green" id="kpi-soc">
+      <div class="kpi-label">State of Charge</div>
+      <div class="kpi-value">—<span class="kpi-unit">%</span></div>
+      <div class="soc-bar-wrap"><div class="soc-bar-fill" id="soc-bar" style="width:0%"></div></div>
+      <div class="kpi-sub" id="kpi-remain">— Ah remaining</div>
+    </div>
+
+    <div class="kpi" id="kpi-delta">
+      <div class="kpi-label">Cell Delta</div>
+      <div class="kpi-value">—<span class="kpi-unit">mV</span></div>
+      <div class="kpi-sub" id="kpi-avg">avg — V</div>
+    </div>
+
+    <div class="kpi" id="kpi-temp">
+      <div class="kpi-label">Temperature</div>
+      <div class="kpi-value">—<span class="kpi-unit">°C</span></div>
+      <div class="kpi-sub" id="kpi-temp-sub">MOSFET</div>
+    </div>
+
+  </div>
+
+  <!-- Charts Row -->
+  <div class="two-col">
+
+    <div class="panel">
+      <div class="panel-header">
+        <div class="panel-dot"></div>
+        <div class="panel-title">Voltage History</div>
+      </div>
+      <div class="chart-wrap">
+        <canvas id="chart-voltage"></canvas>
+      </div>
+    </div>
+
+    <div class="panel">
+      <div class="panel-header">
+        <div class="panel-dot" style="background:var(--accent2)"></div>
+        <div class="panel-title">Current / Power History</div>
+      </div>
+      <div class="chart-wrap">
+        <canvas id="chart-current"></canvas>
+      </div>
+    </div>
+
+  </div>
+
+  <!-- Cell Grid -->
+  <div class="panel">
+    <div class="panel-header">
+      <div class="panel-dot" style="background:var(--accent2)"></div>
+      <div class="panel-title">Cell Voltages</div>
+      <span id="cell-delta-badge" style="margin-left:auto"></span>
+    </div>
+    <div class="cell-grid" id="cell-grid"></div>
+  </div>
+
+  <!-- Bottom Row -->
+  <div class="two-col">
+
+    <!-- Temperatures + Status -->
+    <div style="display:flex;flex-direction:column;gap:16px;">
+
+      <div class="panel">
+        <div class="panel-header">
+          <div class="panel-dot" style="background:var(--warn)"></div>
+          <div class="panel-title">Temperatures</div>
+        </div>
+        <div class="panel-body">
+          <div class="temp-row" id="temp-row"></div>
+        </div>
+      </div>
+
+      <div class="panel">
+        <div class="panel-header">
+          <div class="panel-dot"></div>
+          <div class="panel-title">Status</div>
+        </div>
+        <div class="panel-body" id="status-panel"></div>
+      </div>
+
+    </div>
+
+    <!-- Alarms + Device Info -->
+    <div style="display:flex;flex-direction:column;gap:16px;">
+
+      <div class="panel">
+        <div class="panel-header">
+          <div class="panel-dot" style="background:var(--danger)"></div>
+          <div class="panel-title">Alarms</div>
+        </div>
+        <div class="panel-body">
+          <div class="alarm-list" id="alarm-list"></div>
+        </div>
+      </div>
+
+      <div class="panel">
+        <div class="panel-header">
+          <div class="panel-dot" style="background:var(--muted)"></div>
+          <div class="panel-title">Device</div>
+        </div>
+        <div class="panel-body">
+          <div class="device-grid" id="device-grid"></div>
+        </div>
+      </div>
+
+    </div>
+
+  </div>
+
+</main>
+
+<script>
+// ── Config ────────────────────────────────────────────────────────
+const MQTT_WS_URL   = 'ws://140.245.192.207:1883';  // ← change this
+const TOPIC_PACK    = 'bms/jk/pack';
+const TOPIC_CELLS   = 'bms/jk/cells';
+const MAX_HISTORY   = 60; // points
+
+// ── State ─────────────────────────────────────────────────────────
+let pack  = {};
+let cells = {};
+let history = { t:[], v:[], a:[], w:[] };
+let offlineTimer = null;
+
+// ── Chart setup ───────────────────────────────────────────────────
+const chartDefaults = {
+  responsive: true,
+  maintainAspectRatio: false,
+  animation: { duration: 300 },
+  plugins: { legend: { display: false } },
+  scales: {
+    x: {
+      ticks: { color:'#4a6080', font:{size:9}, maxTicksLimit:6 },
+      grid:  { color:'rgba(28,45,66,.6)' }
+    },
+    y: {
+      ticks: { color:'#4a6080', font:{size:9}, font:{family:'JetBrains Mono'} },
+      grid:  { color:'rgba(28,45,66,.6)' }
+    }
+  }
+};
+
+const voltageChart = new Chart(
+  document.getElementById('chart-voltage').getContext('2d'), {
+  type: 'line',
+  data: {
+    labels: [],
+    datasets: [{
+      data: [],
+      borderColor: '#00c8ff',
+      backgroundColor: 'rgba(0,200,255,.06)',
+      borderWidth: 1.5,
+      pointRadius: 0,
+      fill: true,
+      tension: 0.4
+    }]
+  },
+  options: { ...chartDefaults,
+    scales: { ...chartDefaults.scales,
+      y: { ...chartDefaults.scales.y, title:{ display:true, text:'V', color:'#4a6080', font:{size:9} } }
+    }
+  }
+});
+
+const currentChart = new Chart(
+  document.getElementById('chart-current').getContext('2d'), {
+  type: 'line',
+  data: {
+    labels: [],
+    datasets: [
+      {
+        label: 'Current (A)',
+        data: [],
+        borderColor: '#00ff9d',
+        backgroundColor: 'transparent',
+        borderWidth: 1.5,
+        pointRadius: 0,
+        tension: 0.4,
+        yAxisID: 'yA'
+      },
+      {
+        label: 'Power (W)',
+        data: [],
+        borderColor: 'rgba(255,170,0,.6)',
+        backgroundColor: 'transparent',
+        borderWidth: 1,
+        pointRadius: 0,
+        tension: 0.4,
+        yAxisID: 'yW',
+        borderDash: [4,3]
+      }
+    ]
+  },
+  options: {
+    ...chartDefaults,
+    plugins: { legend: {
+      display: true,
+      labels: { color:'#4a6080', font:{size:9}, boxWidth:12, padding:10 }
+    }},
+    scales: {
+      x: chartDefaults.scales.x,
+      yA: {
+        position: 'left',
+        ticks: { color:'#00ff9d', font:{size:9,family:'JetBrains Mono'} },
+        grid:  { color:'rgba(28,45,66,.6)' }
+      },
+      yW: {
+        position: 'right',
+        ticks: { color:'rgba(255,170,0,.7)', font:{size:9,family:'JetBrains Mono'} },
+        grid:  { display: false }
+      }
+    }
+  }
+});
+
+// ── Helpers ───────────────────────────────────────────────────────
+function fmt(v, d=3) { return (v==null||isNaN(v)) ? '—' : parseFloat(v).toFixed(d); }
+function timeLabel() {
+  const d = new Date();
+  return d.getHours().toString().padStart(2,'0') + ':' +
+         d.getMinutes().toString().padStart(2,'0') + ':' +
+         d.getSeconds().toString().padStart(2,'0');
+}
+
+function push(arr, val) {
+  arr.push(val);
+  if (arr.length > MAX_HISTORY) arr.shift();
+}
+
+// ── Update KPIs ───────────────────────────────────────────────────
+function updatePack(d) {
+  // Voltage
+  const vEl = document.querySelector('#kpi-voltage .kpi-value');
+  vEl.innerHTML = fmt(d.voltage,3) + '<span class="kpi-unit">V</span>';
+
+  // Current
+  const aEl = document.querySelector('#kpi-current .kpi-value');
+  const aVal = parseFloat(d.current);
+  aEl.innerHTML = fmt(Math.abs(aVal),2) + '<span class="kpi-unit">A</span>';
+  const state = aVal > 0.1 ? 'CHARGING' : aVal < -0.1 ? 'DISCHARGING' : 'IDLE';
+  document.getElementById('state-badge').innerHTML =
+    `<span class="state-badge state-${state}">${state}</span>`;
+
+  // Color current kpi
+  const kpiCur = document.getElementById('kpi-current');
+  kpiCur.className = 'kpi ' + (state==='CHARGING'?'green':state==='DISCHARGING'?'accent':'');
+
+  // Power
+  const pEl = document.querySelector('#kpi-power .kpi-value');
+  const pVal = parseFloat(d.power);
+  pEl.innerHTML = fmt(Math.abs(pVal),1) + '<span class="kpi-unit">W</span>';
+  document.getElementById('kpi-power').className =
+    'kpi ' + (pVal > 0 ? 'green' : pVal < 0 ? 'accent' : '');
+
+  // SoC
+  const soc = parseInt(d.soc);
+  document.querySelector('#kpi-soc .kpi-value').innerHTML =
+    soc + '<span class="kpi-unit">%</span>';
+  document.getElementById('soc-bar').style.width = soc + '%';
+  document.getElementById('kpi-remain').textContent = fmt(d.remain_ah,2) + ' Ah remaining';
+  document.getElementById('kpi-soc').className =
+    'kpi ' + (soc > 50 ? 'green' : soc > 20 ? 'warn' : 'danger');
+
+  // Delta
+  const dv = parseInt(d.delta_mv);
+  document.querySelector('#kpi-delta .kpi-value').innerHTML =
+    dv + '<span class="kpi-unit">mV</span>';
+  document.getElementById('kpi-avg').textContent = 'avg ' + fmt(d.avg_cell_v,3) + ' V';
+  document.getElementById('kpi-delta').className =
+    'kpi ' + (dv < 20 ? '' : dv < 50 ? 'warn' : 'danger');
+
+  // Temp
+  document.querySelector('#kpi-temp .kpi-value').innerHTML =
+    fmt(d.temp_mosfet,1) + '<span class="kpi-unit">°C</span>';
+
+  // Temps panel
+  const temps = [
+    { label: 'MOSFET',   val: d.temp_mosfet },
+    { label: 'Sensor 1', val: d.temp1 },
+    { label: 'Sensor 2', val: d.temp2 }
+  ];
+  document.getElementById('temp-row').innerHTML = temps.map(t => `
+    <div class="temp-item">
+      <div class="temp-label">${t.label}</div>
+      <div class="temp-bar-wrap">
+        <div class="temp-bar-fill" style="width:${Math.min(100,(t.val/80)*100)}%"></div>
+      </div>
+      <div class="temp-val">${fmt(t.val,1)} °C</div>
+    </div>`).join('');
+
+  // Status panel
+  const upDays  = Math.floor(d.uptime_sec / 86400);
+  const upH     = Math.floor((d.uptime_sec % 86400) / 3600);
+  const upM     = Math.floor((d.uptime_sec % 3600) / 60);
+  document.getElementById('status-panel').innerHTML = `
+    <div class="status-row">
+      <span class="status-key">Charge MOS</span>
+      <span class="pill ${d.charge_mos?'on':'off'}">${d.charge_mos?'ON':'OFF'}</span>
+    </div>
+    <div class="status-row">
+      <span class="status-key">Discharge MOS</span>
+      <span class="pill ${d.disch_mos?'on':'off'}">${d.disch_mos?'ON':'OFF'}</span>
+    </div>
+    <div class="status-row">
+      <span class="status-key">Balancer</span>
+      <span class="pill ${d.balancer?'on':'off'}">${d.balancer?'ACTIVE':'OFF'}</span>
+    </div>
+    <div class="status-row">
+      <span class="status-key">Remaining</span>
+      <span class="status-val">${fmt(d.remain_ah,2)} Ah</span>
+    </div>
+    <div class="status-row">
+      <span class="status-key">Cycles</span>
+      <span class="status-val">${d.cycles||'—'}</span>
+    </div>
+    <div class="status-row">
+      <span class="status-key">Uptime</span>
+      <span class="status-val">${upDays}d ${upH}h ${upM}m</span>
+    </div>`;
+
+  // Alarms
+  const alarmDefs = [
+    { key:'alarm_ov', label:'Overvoltage' },
+    { key:'alarm_uv', label:'Undervoltage' },
+    { key:'alarm_oc', label:'Overcurrent' },
+    { key:'alarm_ot', label:'Over Temperature' },
+  ];
+  const activeAlarms = alarmDefs.filter(a => d[a.key]);
+  document.getElementById('alarm-list').innerHTML = activeAlarms.length === 0
+    ? `<div class="alarm-item ok"><span class="alarm-icon">✓</span>All systems normal</div>`
+    : activeAlarms.map(a => `
+        <div class="alarm-item active">
+          <span class="alarm-icon">⚠</span>${a.label}
+        </div>`).join('');
+}
+
+// ── Update cells ──────────────────────────────────────────────────
+function updateCells(d) {
+  const keys = Object.keys(d).filter(k=>k.startsWith('c')).sort();
+  if (!keys.length) return;
+
+  const vals = keys.map(k => parseFloat(d[k]));
+  const min  = Math.min(...vals);
+  const max  = Math.max(...vals);
+  const range = max - min || 0.001;
+
+  const delta = Math.round((max - min) * 1000);
+  const badge = document.getElementById('cell-delta-badge');
+  badge.innerHTML = `<span class="delta-pill${delta>=50?' danger':delta>=20?' warn':''}">Δ ${delta} mV</span>`;
+
+  document.getElementById('cell-grid').innerHTML = keys.map((k,i) => {
+    const v = vals[i];
+    const pct = Math.round(((v - min) / range) * 100);
+    const isMin = v === min;
+    const isMax = v === max;
+    return `
+      <div class="cell-card${isMin?' min-cell':isMax?' max-cell':''}">
+        <div class="bal-icon">${pack.balancer ? '⚡' : ''}</div>
+        <div class="cell-num">C${k.slice(1)}</div>
+        <div class="cell-v">${fmt(v,3)}</div>
+        <div class="cell-bar">
+          <div class="cell-bar-fill" style="width:${pct}%"></div>
+        </div>
+      </div>`;
+  }).join('');
+}
+
+// ── Update history charts ─────────────────────────────────────────
+function updateCharts() {
+  const t = timeLabel();
+  push(history.t, t);
+  push(history.v, parseFloat(pack.voltage) || 0);
+  push(history.a, parseFloat(pack.current) || 0);
+  push(history.w, parseFloat(pack.power)   || 0);
+
+  voltageChart.data.labels = [...history.t];
+  voltageChart.data.datasets[0].data = [...history.v];
+  voltageChart.update('none');
+
+  currentChart.data.labels = [...history.t];
+  currentChart.data.datasets[0].data = [...history.a];
+  currentChart.data.datasets[1].data = [...history.w];
+  currentChart.update('none');
+}
+
+// ── Offline detection ─────────────────────────────────────────────
+function resetOfflineTimer() {
+  clearTimeout(offlineTimer);
+  document.getElementById('offline-banner').style.display = 'none';
+  offlineTimer = setTimeout(() => {
+    document.getElementById('offline-banner').style.display = 'block';
+  }, 15000);
+}
+
+// ── MQTT ──────────────────────────────────────────────────────────
+const dot    = document.getElementById('status-dot');
+const label  = document.getElementById('conn-label');
+const lastEl = document.getElementById('last-update');
+
+const client = mqtt.connect(MQTT_WS_URL, {
+  clientId: 'bms-dashboard-' + Math.random().toString(16).slice(2,8),
+  reconnectPeriod: 3000,
+  keepalive: 30
+});
+
+client.on('connect', () => {
+  dot.className   = 'status-dot online';
+  label.textContent = 'connected';
+  client.subscribe([TOPIC_PACK, TOPIC_CELLS]);
+});
+
+client.on('disconnect', () => {
+  dot.className     = 'status-dot offline';
+  label.textContent = 'disconnected';
+});
+
+client.on('error', () => {
+  dot.className     = 'status-dot offline';
+  label.textContent = 'connection error';
+});
+
+client.on('message', (topic, payload) => {
+  try {
+    const d = JSON.parse(payload.toString());
+
+    if (topic === TOPIC_PACK) {
+      pack = d;
+      updatePack(d);
+      updateCharts();
+      lastEl.textContent = 'updated ' + timeLabel();
+      resetOfflineTimer();
+    }
+
+    if (topic === TOPIC_CELLS) {
+      cells = d;
+      updateCells(d);
+    }
+
+  } catch(e) { console.warn('Parse error:', e); }
+});
+
+// ── Device info (static, update when pack first arrives) ──────────
+// Set from first pack message if serial available
+function setDeviceInfo() {
+  document.getElementById('device-grid').innerHTML = `
+    <div class="device-item">
+      <div class="device-label">Model</div>
+      <div class="device-val">JK-B1A24S15P</div>
+    </div>
+    <div class="device-item">
+      <div class="device-label">Serial</div>
+      <div class="device-val">601262R2B903193</div>
+    </div>
+    <div class="device-item">
+      <div class="device-label">Hardware</div>
+      <div class="device-val">V19H</div>
+    </div>
+    <div class="device-item">
+      <div class="device-label">Firmware</div>
+      <div class="device-val">V19.30</div>
+    </div>
+    <div class="device-item">
+      <div class="device-label">Nominal</div>
+      <div class="device-val">40 Ah</div>
+    </div>
+    <div class="device-item">
+      <div class="device-label">Cells</div>
+      <div class="device-val">14S LiPo</div>
+    </div>`;
+}
+setDeviceInfo();
+</script>
+</body>
+</html>
