@@ -703,7 +703,6 @@
 
 <script>
 // ── Config ────────────────────────────────────────────────────────
-const MQTT_WS_URL   = 'ws://140.245.192.207:9001';  // ← change this
 const TOPIC_PACK    = 'bms/jk/pack';
 const TOPIC_CELLS   = 'bms/jk/cells';
 const MAX_HISTORY   = 60; // points
@@ -989,47 +988,51 @@ const dot    = document.getElementById('status-dot');
 const label  = document.getElementById('conn-label');
 const lastEl = document.getElementById('last-update');
 
-const client = mqtt.connect(MQTT_WS_URL, {
-  clientId: 'bms-dashboard-' + Math.random().toString(16).slice(2,8),
-  reconnectPeriod: 3000,
-  keepalive: 30
-});
+async function initMqtt() {
+  const cfg = await fetch('/api/config').then(r => r.json());
+  const client = mqtt.connect(cfg.mqtt_ws_url, {
+    clientId: 'bms-dashboard-' + Math.random().toString(16).slice(2,8),
+    reconnectPeriod: 3000,
+    keepalive: 30
+  });
 
-client.on('connect', () => {
-  dot.className   = 'status-dot online';
-  label.textContent = 'connected';
-  client.subscribe([TOPIC_PACK, TOPIC_CELLS]);
-});
+  client.on('connect', () => {
+    dot.className     = 'status-dot online';
+    label.textContent = 'connected';
+    client.subscribe([TOPIC_PACK, TOPIC_CELLS]);
+  });
 
-client.on('disconnect', () => {
-  dot.className     = 'status-dot offline';
-  label.textContent = 'disconnected';
-});
+  client.on('disconnect', () => {
+    dot.className     = 'status-dot offline';
+    label.textContent = 'disconnected';
+  });
 
-client.on('error', () => {
-  dot.className     = 'status-dot offline';
-  label.textContent = 'connection error';
-});
+  client.on('error', () => {
+    dot.className     = 'status-dot offline';
+    label.textContent = 'connection error';
+  });
 
-client.on('message', (topic, payload) => {
-  try {
-    const d = JSON.parse(payload.toString());
+  client.on('message', (topic, payload) => {
+    try {
+      const d = JSON.parse(payload.toString());
 
-    if (topic === TOPIC_PACK) {
-      pack = d;
-      updatePack(d);
-      updateCharts();
-      lastEl.textContent = 'updated ' + timeLabel();
-      resetOfflineTimer();
-    }
+      if (topic === TOPIC_PACK) {
+        pack = d;
+        updatePack(d);
+        updateCharts();
+        lastEl.textContent = 'updated ' + timeLabel();
+        resetOfflineTimer();
+      }
 
-    if (topic === TOPIC_CELLS) {
-      cells = d;
-      updateCells(d);
-    }
+      if (topic === TOPIC_CELLS) {
+        cells = d;
+        updateCells(d);
+      }
 
-  } catch(e) { console.warn('Parse error:', e); }
-});
+    } catch(e) { console.warn('Parse error:', e); }
+  });
+}
+initMqtt();
 
 // ── Device info (static, update when pack first arrives) ──────────
 // Set from first pack message if serial available

@@ -29,11 +29,12 @@ from models import StatusResponse
 
 load_dotenv()
 
-MQTT_HOST = os.getenv("MQTT_HOST", "localhost")
-MQTT_PORT = int(os.getenv("MQTT_PORT", "1883"))
-MQTT_USER = os.getenv("MQTT_USER", "esp32")
-MQTT_PASS = os.getenv("MQTT_PASS", "")
-KEEP_DAYS = int(os.getenv("KEEP_DAYS", "30"))
+MQTT_HOST    = os.getenv("MQTT_HOST", "localhost")
+MQTT_PORT    = int(os.getenv("MQTT_PORT", "1883"))
+MQTT_WS_PORT = int(os.getenv("MQTT_WS_PORT", "9001"))
+MQTT_USER    = os.getenv("MQTT_USER", "esp32")
+MQTT_PASS    = os.getenv("MQTT_PASS", "")
+KEEP_DAYS    = int(os.getenv("KEEP_DAYS", "30"))
 
 TOPIC_PACK  = "bms/jk/pack"
 TOPIC_CELLS = "bms/jk/cells"
@@ -292,6 +293,13 @@ async def api_alarms(limit: int = 50):
                 row[f] = bool(row[f])
         row.pop("id", None)
     return JSONResponse(content=rows)
+
+
+@app.get("/api/config")
+async def api_config():
+    return JSONResponse(content={
+        "mqtt_ws_url": f"ws://{MQTT_HOST}:{MQTT_WS_PORT}",
+    })
 
 
 @app.get("/api/status", response_model=StatusResponse)
